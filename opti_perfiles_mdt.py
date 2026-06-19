@@ -1,33 +1,15 @@
-﻿import argparse
-import csv
-import json
+﻿import csv
+import sys
 import re
 from html import unescape
 from pathlib import Path
 
-
 NOMBRE_PATTERN = re.compile(r"^(\d+)")
-MAPPING_PATH = Path(__file__).with_name("obras_map.json")
 EXCLUDED_PERFILES = {
-    "MT-0212",
-    "MT-0217",
-    "MT-0220",
-    "MT-0225",
-    "MT-0226",
-    "MT-0230",
-    "MT-0231",
-    "MT-0232",
-    "MT-0233",
-    "MT-0237",
-    "MT-0238",
-    "MT-0257",
-    "MT-6535",
-    "MT-0995",
-    "MT-6090",
-    "MT-6513",
-    "MT-6508",
+    "MT-0212", "MT-0217", "MT-0220", "MT-0225", "MT-0226", "MT-0230",
+    "MT-0231", "MT-0232", "MT-0233", "MT-0237", "MT-0238", "MT-0257",
+    "MT-6535", "MT-0995", "MT-6090", "MT-6513", "MT-6508",
 }
-
 
 def read_text(path: str) -> str:
     path_obj = Path(path)
@@ -37,7 +19,6 @@ def read_text(path: str) -> str:
         except UnicodeError:
             continue
     return path_obj.read_text(encoding="utf-8", errors="replace")
-
 
 def parse_nombre(raw: str) -> tuple[str | None, str, str, int | None]:
     raw_clean = " ".join(raw.split())
@@ -64,11 +45,9 @@ def parse_nombre(raw: str) -> tuple[str | None, str, str, int | None]:
 
     return prefix, core, raw_clean, order
 
-
 def normalize_perfil(perfil: str) -> str:
     """Remove spaces and uppercase to compare/exclude consistently."""
     return perfil.replace(" ", "").upper()
-
 
 def perfil_sort_key(perfil: str) -> tuple[int, str]:
     """Use the first number in the perfil as the primary sort key."""
@@ -76,7 +55,6 @@ def perfil_sort_key(perfil: str) -> tuple[int, str]:
     if match:
         return int(match.group()), perfil
     return 10**9, perfil
-
 
 def extract_rows(html_text: str) -> list[dict[str, object]]:
     text = re.sub(r"<[^>]+>", "\n", html_text)
@@ -143,34 +121,18 @@ def extract_rows(html_text: str) -> list[dict[str, object]]:
                     )
     return rows
 
-
 def assign_obras(rows: list[dict[str, object]]) -> None:
     prompts: dict[str, str] = {}
-    if MAPPING_PATH.exists():
-        try:
-            stored = json.loads(MAPPING_PATH.read_text(encoding="utf-8"))
-            if isinstance(stored, dict):
-                prompts.update({str(k): str(v) for k, v in stored.items()})
-        except (json.JSONDecodeError, OSError):
-            pass
-    updated = False
     for row in rows:
         key = row["_obra_key"]
+        # Solo pregunta si la obra no se registró en esta misma ejecución
         if key not in prompts:
             label = row["_prompt_label"]
-            prompts[key] = input(f"Designe un nombre para {label}: ").strip()
-            updated = True
+            prompts[key] = input(f"Designe un nombre para la obra [{label}]: ").strip()
+        
         row["Obra"] = prompts[key]
         del row["_obra_key"]
         del row["_prompt_label"]
-    if updated:
-        try:
-            MAPPING_PATH.write_text(
-                json.dumps(prompts, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        except OSError:
-            pass
-
 
 def write_csv(rows: list[dict[str, object]], output_path: str) -> None:
     fieldnames = ["Perfil", "Tiras", "Corte_mm", "Nombre", "Obra", "Numero_de_Orden"]
@@ -184,26 +146,47 @@ def write_csv(rows: list[dict[str, object]], output_path: str) -> None:
                 row_data[field] = "" if value is None else value
             writer.writerow(row_data)
 
-
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Parse MaxCut HTML output y emitir un CSV expandido de cortes."
-    )
-    parser.add_argument("html_path", help="Ruta al archivo HTML de MaxCut.")
-    parser.add_argument("csv_path", help="Ruta donde escribir el CSV.")
-    args = parser.parse_args()
+    # 1. Definir el directorio de búsqueda de forma estática
+    directorio_busqueda = Path(r"C:\MDT_Winproject_2\Proyecto")
+    
+    if not directorio_busqueda.exists():
+        raise SystemExit(f"ERROR: No se encontró el directorio {directorio_busqueda}")
+    
+    # 2. Buscar automáticamente el archivo .html (agarramos el más reciente)
+    archivos_html = list(directorio_busqueda.glob("*.htm"))
+    if not archivos_html:
+        raise SystemExit(f"ERROR: No se encontraron archivos .html en {directorio_busqueda}")
+    
+    archivos_html.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    html_path = archivos_html[0]
+    print(f"Procesando el archivo más reciente: {html_path.name}\n")
 
-    html_text = read_text(args.html_path)
+    # 3. DETERMINAR LA CARPETA DONDE ESTÁ EL CÓDIGO
+    if getattr(sys, 'frozen', False):
+        # Si el script fue compilado a un .exe, busca la carpeta del ejecutable
+        carpeta_del_codigo = Path(sys.executable).parent
+    else:
+        # Si se ejecuta como un archivo .py normal
+        carpeta_del_codigo = Path(__file__).resolve().parent
+
+    # Guardar el CSV exactamente en esa misma carpeta
+    csv_path = carpeta_del_codigo / "Opti.csv"
+
+    # 4. Procesamiento de los datos
+    html_text = read_text(str(html_path))
     rows = extract_rows(html_text)
+    
     excluded = {normalize_perfil(p) for p in EXCLUDED_PERFILES}
     rows = [row for row in rows if normalize_perfil(str(row["Perfil"])) not in excluded]
     rows.sort(key=lambda row: perfil_sort_key(str(row["Perfil"])))
+    
     if not rows:
         raise SystemExit("No se encontraron cortes en el HTML proporcionado.")
 
     assign_obras(rows)
-    write_csv(rows, args.csv_path)
-
+    write_csv(rows, str(csv_path))
+    print(f"\n¡Éxito! El archivo se guardó correctamente en: {csv_path}")
 
 if __name__ == "__main__":
     main()
